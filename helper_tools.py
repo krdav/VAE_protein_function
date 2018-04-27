@@ -1,129 +1,129 @@
-import pandas as pd
-import numpy as np 
+import numpy as np
 
-#Invariants
-ORDER_KEY="XILVAGMFYWEDQNHCRKSTPBZ-"[::-1]
-ORDER_LIST=list(ORDER_KEY)
+try:
+    import jellyfish
 
-#Drop columns that are not part of the alignment
-def prune_seq(sequence):
-    output=""
-    for s in sequence:
-        if s!="." and not (s.islower()):
-            output+=s
-    return output
+    def hamming_dist(s1, s2):
+        if s1 == s2:
+            return 0
+        else:
+            return jellyfish.hamming_distance(unicode(s1), unicode(s2))
+except:
+    def hamming_dist(seq1, seq2):
+        return sum(x != y for x, y in zip(seq1, seq2))
 
-#Find the indices of aligned columns, Note that indices are 0-indexed
-def index_of_non_lower_case_dot(sequence):
-    output=[]
-    for s in range(len(sequence)):
-        if sequence[s]!="." and not (sequence[s].islower()):
-            output.append(s)
-    return output
 
-#Helper function to translate string to one_hot
-def translate_string_to_one_hot(sequence,order_list):
-    out=np.zeros((len(order_list),len(sequence)))
-    for i in range(len(sequence)):
-        out[order_list.index(sequence[i])][i]=1
+# A2M reference:
+# https://compbio.soe.ucsc.edu/a2m-desc.html
+# Amino acid alphabet:
+AAamb_ORDER = 'ABCDEFGHIKLMNPQRSTVWXYZ-'
+AAamb_LIST = list(AAmb_ORDER)
+AAamb_DICT = {c:i for i, c in enumerate(AAamb_ORDER)}
+AAamb_SET = set(AAamb_ORDER)
+AA_ORDER = 'ACDEFGHIKLMNPQRSTVWY-'
+AA_LIST = list(AA_ORDER)
+AA_DICT = {c:i for i, c in enumerate(AA_ORDER)}
+AA_SET = set(AA_ORDER)
+
+
+def prune_a2m(seq):
+    '''Drop columns that are not part of the alignment (A2M format).'''
+    return ''.join([s for s in seq if s in AAamb_SET])
+
+
+def filter_seq(seq):
+    '''Filter away ambiguous character containing sequences'''
+    if set(list(seq)) <= AA_SET:
+        return seq
+    else:
+        return None
+
+
+def index_a2m(seqs):
+    '''Index a A2M alignment.'''
+    l = len(prune_a2m(seqs[0]))
+    for seq in seqs:
+        assert(l == len(prune_a2m(seq)))
+    return list(range(l))
+
+
+def seq2onehot(seq, aa_dict):
+    '''Translate a sequence string into one hot encoding'''
+    out = np.zeros((len(aa_dict), len(seq)))
+    for i, s in enumerate(seq):
+        out[aa_dict[s]][i] = 1
     return out
 
-#generate single mutants for those positions that experimental data and alignment are available
-def mutate_single(wt,mutation_data,offset=0,index=0):
-    mutants=[]
-    prev=int(mutation_data[0][1])-offset
 
-    for md in mutation_data:
-        if prev!=int(md[1])-offset:
-           index+=1
-           prev=int(md[1])-offset 
-        mutant=[md[2] if i==index else wt[i] for i in range (len(wt))]
-        mutants.append(mutant)
-        
-    return mutants
+def read_mutation_data(filename):
+    '''
+    Read semicolon separated mutation data.
+    Format looks like this:
+# Reference: Melamed et al., RNA 2013 (Supplementary Table 5), PMID: 24064791
+# Experimental data columns: XY_Enrichment_score
+mutant;effect_prediction_epistatic;effect_prediction_independent;XY_Enrichment_score
+G169W,F170V;-18.1610034815;-15.1524950321;0.059160001
+.
+.
+    '''
+    with open(filename, 'r') as fh:
+        data_dict = dict()
+        for l in fh:
+            if l.startswith('#'):
+                continue
+            elif len(data_dict) == 0:
+                data_dict = {el:[] for el in l.split(';')}
+                h2p = {i:el for i, el in enumerate(l.split(';'))}
+                continue
+            for i, el in enumerate(l.split(';')):
+                if i == 0:
+                    el = e
+                data_dict[h2p[i]].append(el)
+    return data_dict
 
-#generate single mutants for those positions that experimental data and alignment are available
-def mutate_double(wt,mutation_data1,mutation_data2,offset=0,index=0):
-    mutants=[]
-    mutants_double=[]
-    index2=int(mutation_data2[0][1])-int(mutation_data1[0][1])+index
 
-    #make first mutation
-    prev=int(mutation_data1[0][1])-offset
-    for md in mutation_data1:
-        if prev!=int(md[1])-offset: #new
-           index+=int(md[1])-offset-prev
-           prev=int(md[1])-offset 
-        mutant=[md[2] if i==index else wt[i] for i in range (len(wt))]
-        mutants.append(mutant)
-    
-    #make second mutation
-    prev=int(mutation_data2[0][1])-offset
-    for md,mutant in zip(mutation_data2,mutants):
-        if prev!=int(md[1])-offset: #new
-           index2+=int(md[1])-offset-prev
-           prev=int(md[1])-offset 
-        mutant=[md[2] if i==index2 else mutant[i] for i in range (len(mutant))]
-        mutants_double.append(mutant)
-        
-        
-    return mutants_double
+def read_MSA(filename, fformat='fasta', num_reads=None):
+    '''Read an alignment file of either fasta or A2M format.'''
+    from Bio import SeqIO
+    # ids = list()
+    # seqs = list()
+    seq_dict = dict()
+    i = 0
+    for record in SeqIO.parse(filename, 'fasta'):
+        if num_reads not None and i == num_reads:
+            break
+        else:
+            i += 1
 
-#generate a pandas dataframe from an alignment file
-def pdataframe_from_alignment_file(filename,num_reads=200000):
-    
-    data=pd.DataFrame(columns=["name","sequence"])
-    with open(filename) as datafile:
-        serotype=""
-        sequence=""
-        dump=False
-        count=0
-        dataf=datafile.readlines()
-        for line in dataf:
-            if line.startswith(">"):
-               if count>=num_reads:
-                  break
-               if dump:
-                  row=pd.DataFrame([[serotype,sequence]],columns=["name","sequence"])
-                  data=data.append(row,ignore_index=True)
-               dump=True
-               serotype=line[1:].strip("\n")
-               sequence=""
-               count+=1
-            else:
-                sequence+=line.strip("\n")
-        row=pd.DataFrame([[serotype,sequence]],columns=["name","sequence"])
-        data=data.append(row,ignore_index=True)
-    return data
+        if fformat == 'a2m':
+            record.seq = prune_a2m(record.seq)
+            # Current, filtering is enforced because other functions also depend on the list of amino acids being immutable:
+            record.seq = filter_seq(record.seq)
+        if record.seq is not None:
+            # ids.append(record.id)
+            # seqs.append(records.seq)
+            assert(record.id not in seq_dict)
+            seq_dict[record.id] = records.seq
+    # return ids, seqs
+    return seq_dict
 
 
 #Compute log probability of a particular mutant sequence from a pwm and a one-hot encoding
-def compute_log_probability(one_hot_seq,pwm):
-    prod_mat=np.matmul(one_hot_seq.T,pwm)
-    log_prod_mat=np.log(prod_mat)
-    sum_diag=np.trace(log_prod_mat)
+def compute_log_probability(one_hot_seq, pwm):
+    prod_mat = np.matmul(one_hot_seq.T, pwm)
+    log_prod_mat = np.log(prod_mat)
+    sum_diag = np.trace(log_prod_mat)
     return sum_diag
 
-#Compute the most likely protein sequence given a position weight matrix
-def most_likely_seq(pwm):
-    most_likely=np.argmax(pwm,axis=0)
-    out_seq=""
-    for m in most_likely:
-        out_seq+=ORDER_LIST[m]
-    return out_seq
 
-
-#compute distance between two aligned sequences
-def aligned_dist(s1,s2):
-    count=0
-    for i,j in zip(s1,s2):
-        if i!=j:
-            count+=1
-    return count
+def PWM_MAP_seq(pwm):
+    '''Compute the most likely protein sequence (MAP estimate) given a position weight matrix (PWM)'''
+    MAP = np.argmax(pwm, axis=0)
+    return ''.join([ORDER_LIST[m] for m in MAP])
 
 
 #Compute a new weight for sequence based on similarity threshold theta 
-def reweight_sequences(dataset,theta):
+def reweight_sequences(dataset, theta):
     weights=[1.0 for i in range(len(dataset))]
     start = time.process_time()
 
@@ -134,9 +134,9 @@ def reweight_sequences(dataset,theta):
             start = time.process_time()
 
         for j in range(i+1,len(dataset)):
-            if aligned_dist(dataset[i],dataset[j])*1./len(dataset[i]) <theta:
-               weights[i]+=1
-               weights[j]+=1
+            if hamming_dist(dataset[i], dataset[j])*1./len(dataset[i]) <theta:
+                weights[i]+=1
+                weights[j]+=1
     return list(map(lambda x:1./x, weights))
     
     
