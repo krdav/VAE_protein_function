@@ -3,9 +3,13 @@ import numpy as np
 import sys
 import time
 
-#Invariants
-ORDER_KEY="XILVAGMFYWEDQNHCRKSTPBZ-"[::-1]
-ORDER_LIST=list(ORDER_KEY)
+# A2M reference:
+# https://compbio.soe.ucsc.edu/a2m-desc.html
+# Amino acid alphabet:
+AA_ORDER = 'ABCDEFGHIKLMNPQRSTVWXYZ-'
+AA_LIST = list(AA_ORDER)
+AA_DICT = {c:i for i, c in enumerate(AA_ORDER)}
+AA_SET = set(AA_ORDER)
 
 #Drop columns that are not part of the alignment
 def prune_seq(sequence):
