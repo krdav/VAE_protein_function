@@ -68,9 +68,9 @@ class VAEdata():
         self.train_seq_dict = None
         self.train_seq_dict_order = None
         self.train_seq_dict_weights = None
+        self.train_ordered_weights = None
         self.train_Neff = None
         self.train_onehot_list = None
-        self.train_onehot_order = None
 
         # Test data:
         self.__read_test_set_filename = None
@@ -82,11 +82,82 @@ class VAEdata():
         self.test_value_list = None
         self.test_seq_dict_order = None
         self.test_onehot_list = None
-        self.onehot_order = None
 
         # Column observation cutoff:
         self.obs_cutoff_min_freq = 0.05
         self.obs_cutoff_sele = None
+
+        # VAE parameters:
+        self.validation_split = 0.1
+        self.batch_size_try = [50, 40, 20, 10, 5, 4, 3, 2, 1]
+        self.batch_size_train_cut = 100
+        self.batch_size_test_cut = 10
+        self.batch_size = None
+        self.train_cut = None
+        self.test_cut = None
+
+    def get_ordered_weights(self):
+        if self.train_seq_dict_weights is None:
+            raise RuntimeError('Training set weights are not yet initialized.')
+        l = list()
+        for i in range(len(self.train_seq_dict_order)):
+            ID = self.train_seq_dict_order[i]
+            l.append(self.train_seq_dict_weights[ID])
+        self.train_ordered_weights = np.array(l)
+
+    def calc_batch_size(self, batch_size_try=None, validation_split=None, batch_size_train_cut=None, batch_size_test_cut=None):
+        '''Function to find the best batch size given some cutoffs on the train/test data.'''
+        if self.train_onehot_list is None or self.test_onehot_list is None:
+            raise RuntimeError('Both train and test set need to be defined first.')
+        if batch_size_try is None:
+            batch_size_try = self.batch_size_try
+        else:
+            self.batch_size_try = batch_size_try
+        if validation_split is None:
+            validation_split = self.validation_split
+        else:
+            self.validation_split = validation_split
+        if batch_size_train_cut is None:
+            batch_size_train_cut = self.batch_size_train_cut
+        else:
+            self.batch_size_train_cut = batch_size_train_cut
+        if batch_size_test_cut is None:
+            batch_size_test_cut = self.batch_size_test_cut
+        else:
+            self.batch_size_test_cut = batch_size_test_cut
+        train_cut = False
+        test_cut = False
+        positives = list()
+        for batch_size in batch_size_try:
+            for i in range(batch_size_train_cut):
+                t1 = ((self.train_onehot_list.shape[0] - i) * validation_split) % batch_size == 0
+                t2 = ((self.train_onehot_list.shape[0] - i) * (1 - validation_split)) % batch_size == 0
+                if t1 and t2:
+                    train_cut = i
+                    break
+            for i in range(batch_size_test_cut):
+                t1_ = ((self.test_onehot_list.shape[0] - i) * validation_split) % batch_size == 0
+                t2_ = ((self.test_onehot_list.shape[0] - i) * (1 - validation_split)) % batch_size == 0
+                if t1_ and t2_:
+                    test_cut = i
+                    break
+            if train_cut and test_cut:
+                positives.append((batch_size, train_cut, test_cut))
+                train_cut = False
+                test_cut = False
+
+        if len(positives) > 0:
+            print('Showing the possible values (at most 100 is printed):')
+            print('batch_size   train_cut   test_cut')
+            for p in positives[:100]:
+                print('{:>10}   {:>9}   {:>8}'.format(*p))
+            self.batch_size = positives[0][0]
+            self.train_cut = positives[0][1]
+            self.test_cut = positives[0][2]
+            print('Using the first as default:')
+            print('batch_size', self.batch_size)
+            print('train_cut', self.train_cut)
+            print('test_cut', self.test_cut)
 
     def set_wt_set(self, wt_seq):
         '''Set the wild type sequence, which works as a reference point for the mutation data.'''
@@ -174,7 +245,7 @@ class VAEdata():
             self.train_seq_dict_weights = {k:1 for k in seq_dict.keys()}
             self.train_Neff = float(len(seq_dict.keys()))
         # Make onehot repressentation:
-        self.train_onehot_list, self.train_onehot_order = self.__make_onehot(self.train_seq_dict)
+        self.train_onehot_list = self.__make_onehot(self.train_seq_dict, self.train_seq_dict_order)
 
     def reweight_sequences(self, theta=0.2, verbose=True, cached_file=None):
         '''Compute new weights for the sequences based on similarity threshold theta.'''
@@ -186,7 +257,7 @@ class VAEdata():
                 weights = np.array(list(self.train_seq_dict_weights.values()))
                 assert(len(weights) == len(self.train_seq_dict))
                 print('Loaded weights from filename: {}'.format(cached_file))
-                self.train_Neff = sum(1 / weights)
+                self.train_Neff = sum(weights)
                 return
             except:
                 print('Could not load weights, either no file or wrong format.')
@@ -204,7 +275,7 @@ class VAEdata():
                     weights[i] += 1
                     weights[j] += 1
         self.train_seq_dict_weights = {self.train_seq_dict_order[i]: 1/weights[i] for i in range(Nseq)}
-        self.train_Neff = sum(1 / weights)
+        self.train_Neff = sum(weights)
         if cached_file is not None:
             print('Dumped weights to filename: {}'.format(cached_file))
             with open(cached_file, 'wb') as fh:
@@ -246,7 +317,7 @@ class VAEdata():
         if self.train_seq_dict is not None:
             self.test_seq_dict = self.__obs_cutoff(self.test_seq_dict, train_set=False)
         # Make onehot repressentation:
-        self.test_onehot_list, self.test_onehot_order = self.__make_onehot(self.test_seq_dict)
+        self.test_onehot_list = self.__make_onehot(self.test_seq_dict, self.test_seq_dict_order)
 
     def __read_fasta_test_set(self):
         seq_dict = dict()
@@ -317,16 +388,15 @@ class VAEdata():
         self.test_value_list = value_list
         self.test_seq_dict_order = seq_dict_order
 
-    def __make_onehot(self, seq_dict):
+    def __make_onehot(self, seq_dict, order_dict):
         '''Translate a sequence strings into one hot encodings.'''
-        onehot_order = dict()
         onehot_list = np.zeros((len(seq_dict), len(AA_DICT), self.get_seq_len()))
-        for i, item in enumerate(seq_dict.items()):
-            ID, seq = item
-            onehot_order[ID] = i
+        for i in range(len(order_dict)):
+            ID = order_dict[i]
+            seq = seq_dict[ID]
             for j, s in enumerate(seq):
                 onehot_list[i][AA_DICT[s]][j] = 1
-        return(np.array([np.array(list(sample.flatten())).T for sample in onehot_list]), onehot_order)
+        return(np.array([np.array(list(sample.flatten())).T for sample in onehot_list]))
 
     def obs_cutoff(self, min_freq):
         '''Set cutoff for dropping columns with too few observations.'''
