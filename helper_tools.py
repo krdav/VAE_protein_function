@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.preprocessing import normalize
 try:
     import jellyfish
 
@@ -48,12 +49,26 @@ def index_a2m(seqs):
     return(list(range(li)))
 
 
-def seq2onehot(seq):
-    '''Translate a sequence string into one hot encoding.'''
-    out = np.zeros((len(AA_DICT), len(seq)))
-    for i, s in enumerate(seq):
-        out[AA_DICT[s]][i] = 1
-    return(out)
+def compute_loglik(onehot_seqs, pwms, seq_len, AA_numb):
+    '''
+    Compute log likelihood of sequences using the one hot encoding
+    and the position weight matrix (pwm) from the generative model.
+    '''
+    loglik = np.zeros(len(onehot_seqs))
+    i = 0
+    for onehot_seq, pwm in zip(onehot_seqs, pwms):
+        onehot_seq = onehot_seq.reshape(AA_numb, seq_len)
+        pwm = normalize(pwm.reshape(AA_numb, seq_len), axis=0, norm='l1')
+        log_prod_mat = np.log(np.matmul(onehot_seq.T, pwm))
+        loglik[i] = np.trace(log_prod_mat)
+        i += 1
+    return(loglik)
+
+
+def PWM_MAP_seq(pwm):
+    '''Compute the most likely protein sequence (MAP estimate) given a position weight matrix (PWM)'''
+    MAP = np.argmax(pwm, axis=0)
+    return(''.join([ORDER_LIST[m] for m in MAP]))
 
 
 class VAEdata():
@@ -71,6 +86,7 @@ class VAEdata():
         self.train_ordered_weights = None
         self.train_Neff = None
         self.train_onehot_list = None
+        self.train_loglik = None
 
         # Test data:
         self.__read_test_set_filename = None
@@ -78,10 +94,13 @@ class VAEdata():
         self.__read_test_set_offsett = None
         self.__wt_seq_inp = None  # This copy is necessary for reconstruction
         self.wt_seq = None
+        self.wt_seq_onehot_list = None
+        self.wt_seq_loglik = None
         self.test_seq_dict = None
         self.test_value_list = None
         self.test_seq_dict_order = None
         self.test_onehot_list = None
+        self.test_loglik = None
 
         # Column observation cutoff:
         self.obs_cutoff_min_freq = 0.05
@@ -96,7 +115,23 @@ class VAEdata():
         self.train_cut = None
         self.test_cut = None
 
+    def add_loglik(self, loglik, itype='test'):
+        '''Add log likelihood values to train/test/wt sequences.'''
+        assert(type(loglik) == np.ndarray)
+        if itype == 'test':
+            assert(len(loglik) == (len(self.test_onehot_list) - self.test_cut))
+            self.test_loglik = loglik
+        elif itype == 'train':
+            assert(len(loglik) == (len(self.train_onehot_list) - self.train_cut))
+            self.train_loglik = loglik
+        elif itype == 'wt_seq':
+            assert(len(loglik) == 1)
+            self.wt_seq_loglik = loglik[0]
+        else:
+            raise RuntimeError('Unknown type:', itype)
+
     def get_ordered_weights(self):
+        '''Make ordered list of sequence weights for the training set.'''
         if self.train_seq_dict_weights is None:
             raise RuntimeError('Training set weights are not yet initialized.')
         l = list()
@@ -121,10 +156,17 @@ class VAEdata():
             batch_size_train_cut = self.batch_size_train_cut
         else:
             self.batch_size_train_cut = batch_size_train_cut
+        if batch_size_train_cut > len(self.train_onehot_list):
+            batch_size_train_cut = len(self.train_onehot_list)
+            self.batch_size_train_cut = len(self.train_onehot_list)
         if batch_size_test_cut is None:
             batch_size_test_cut = self.batch_size_test_cut
         else:
             self.batch_size_test_cut = batch_size_test_cut
+        if batch_size_test_cut > len(self.test_onehot_list):
+            batch_size_test_cut = len(self.test_onehot_list)
+            self.batch_size_test_cut = len(self.test_onehot_list)
+            
         train_cut = False
         test_cut = False
         positives = list()
@@ -164,6 +206,7 @@ class VAEdata():
         if wt_seq != self.__wt_seq_inp:
             self.wt_seq = wt_seq
             self.__wt_seq_inp = wt_seq
+            self.wt_seq_onehot_list = self.__make_onehot({0:wt_seq}, {0:0})
             # Update mut_code test set:
             if self.__read_test_set_fformat is not None and self.__read_test_set_fformat == 'mut_code':
                 self.read_test_set(self.__read_test_set_filename)
@@ -243,6 +286,7 @@ class VAEdata():
         # Default sequence weight is 1:
         if self.train_seq_dict_weights is None or len(self.train_seq_dict_weights) != len(seq_dict):
             self.train_seq_dict_weights = {k:1 for k in seq_dict.keys()}
+            self.get_ordered_weights()
             self.train_Neff = float(len(seq_dict.keys()))
         # Make onehot repressentation:
         self.train_onehot_list = self.__make_onehot(self.train_seq_dict, self.train_seq_dict_order)
@@ -258,6 +302,7 @@ class VAEdata():
                 assert(len(weights) == len(self.train_seq_dict))
                 print('Loaded weights from filename: {}'.format(cached_file))
                 self.train_Neff = sum(weights)
+                self.get_ordered_weights()
                 return
             except:
                 print('Could not load weights, either no file or wrong format.')
@@ -276,6 +321,7 @@ class VAEdata():
                     weights[j] += 1
         self.train_seq_dict_weights = {self.train_seq_dict_order[i]: 1/weights[i] for i in range(Nseq)}
         self.train_Neff = sum(weights)
+        self.get_ordered_weights()
         if cached_file is not None:
             print('Dumped weights to filename: {}'.format(cached_file))
             with open(cached_file, 'wb') as fh:
@@ -299,6 +345,7 @@ class VAEdata():
             # Provided as input, then update wt_seq:
             self.__wt_seq_inp = wt_seq
             self.wt_seq = wt_seq
+            self.wt_seq_onehot_list = self.__make_onehot({0:wt_seq}, {0:0})
         if offset is None:
             offset = self.__read_test_set_offset
         else:
@@ -342,7 +389,7 @@ class VAEdata():
                 seq_dict_order[i] = i  # For consistency with the "mut_code" format
                 i += 1
         self.test_seq_dict = seq_dict
-        self.test_value_list = value_list
+        self.test_value_list = np.array(value_list)
         self.test_seq_dict_order = seq_dict_order
 
     def __read_mut_code_test_set(self):
@@ -385,7 +432,7 @@ class VAEdata():
                 seq_dict_order[i] = mutkey
                 i += 1
         self.test_seq_dict = seq_dict
-        self.test_value_list = value_list
+        self.test_value_list = np.array(value_list)
         self.test_seq_dict_order = seq_dict_order
 
     def __make_onehot(self, seq_dict, order_dict):
@@ -431,19 +478,3 @@ class VAEdata():
         for k, seq in seq_dict.items():
             seq_dict[k] = ''.join([nt for keep, nt in zip(self.obs_cutoff_sele, seq) if keep])
         return(seq_dict)
-
-
-#Compute log probability of a particular mutant sequence from a pwm and a one-hot encoding
-def compute_log_probability(one_hot_seq, pwm):
-    prod_mat = np.matmul(one_hot_seq.T, pwm)
-    log_prod_mat = np.log(prod_mat)
-    sum_diag = np.trace(log_prod_mat)
-    return(sum_diag)
-
-
-def PWM_MAP_seq(pwm):
-    '''Compute the most likely protein sequence (MAP estimate) given a position weight matrix (PWM)'''
-    MAP = np.argmax(pwm, axis=0)
-    return(''.join([ORDER_LIST[m] for m in MAP]))
-
-    
