@@ -87,6 +87,7 @@ class VAEdata():
         self.train_Neff = None
         self.train_onehot_list = None
         self.train_loglik = None
+        self.train_latent = None
 
         # Test data:
         self.__read_test_set_filename = None
@@ -96,11 +97,13 @@ class VAEdata():
         self.wt_seq = None
         self.wt_seq_onehot_list = None
         self.wt_seq_loglik = None
+        self.wt_seq_latent = None
         self.test_seq_dict = None
         self.test_value_list = None
         self.test_seq_dict_order = None
         self.test_onehot_list = None
         self.test_loglik = None
+        self.test_latent = None
 
         # Column observation cutoff:
         self.obs_cutoff_min_freq = 0.05
@@ -127,6 +130,21 @@ class VAEdata():
         elif itype == 'wt_seq':
             assert(len(loglik) == 1)
             self.wt_seq_loglik = loglik[0]
+        else:
+            raise RuntimeError('Unknown type:', itype)
+
+    def add_latent(self, latent, itype='test'):
+        '''Add log likelihood values to train/test/wt sequences.'''
+        assert(type(latent) == np.ndarray)
+        if itype == 'test':
+            assert(len(latent) == (len(self.test_onehot_list) - self.test_cut))
+            self.test_latent = latent
+        elif itype == 'train':
+            assert(len(latent) == (len(self.train_onehot_list) - self.train_cut))
+            self.train_latent = latent
+        elif itype == 'wt_seq':
+            assert(len(latent) == 1)
+            self.wt_seq_latent = latent[0]
         else:
             raise RuntimeError('Unknown type:', itype)
 
